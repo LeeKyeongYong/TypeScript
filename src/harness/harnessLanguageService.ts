@@ -10,6 +10,10 @@ import { getNewLineCharacter } from "./_namespaces/ts";
 import * as vfs from "./_namespaces/vfs";
 import * as vpath from "./_namespaces/vpath";
 import { incrementalVerifier } from "./incrementalUtils";
+import {
+    createLoggerWithInMemoryLogs,
+    Logger,
+} from "./tsserverLogger";
 
 export function makeDefaultProxy(info: ts.server.PluginCreateInfo): ts.LanguageService {
     const proxy = Object.create(/*o*/ null); // eslint-disable-line no-null/no-null
@@ -133,6 +137,7 @@ export interface LanguageServiceAdapter {
     getLanguageService(): ts.LanguageService;
     getClassifier(): ts.Classifier;
     getPreProcessedFileInfo(fileName: string, fileContents: string): ts.PreProcessedFileInfo;
+    getLogger(): Logger | undefined;
 }
 
 export abstract class LanguageServiceAdapterHost {
@@ -327,6 +332,7 @@ class NativeLanguageServiceHost extends LanguageServiceAdapterHost implements ts
 
 export class NativeLanguageServiceAdapter implements LanguageServiceAdapter {
     private host: NativeLanguageServiceHost;
+    getLogger = ts.returnUndefined;
     constructor(cancellationToken?: ts.HostCancellationToken, options?: ts.CompilerOptions) {
         this.host = new NativeLanguageServiceHost(cancellationToken, options);
     }
@@ -683,6 +689,7 @@ class LanguageServiceShimProxy implements ts.LanguageService {
 export class ShimLanguageServiceAdapter implements LanguageServiceAdapter {
     private host: ShimLanguageServiceHost;
     private factory: ts.TypeScriptServicesFactory;
+    getLogger = ts.returnUndefined;
     constructor(preprocessToResolve: boolean, cancellationToken?: ts.HostCancellationToken, options?: ts.CompilerOptions) {
         this.host = new ShimLanguageServiceHost(preprocessToResolve, cancellationToken, options);
         this.factory = new ts.TypeScriptServicesFactory();
@@ -762,7 +769,7 @@ class SessionClientHost extends NativeLanguageServiceHost implements ts.server.S
     }
 }
 
-class SessionServerHost implements ts.server.ServerHost, ts.server.Logger {
+class SessionServerHost implements ts.server.ServerHost {
     args: string[] = [];
     newLine: string;
     useCaseSensitiveFileNames = false;
@@ -838,35 +845,6 @@ class SessionServerHost implements ts.server.ServerHost, ts.server.Logger {
 
     watchDirectory(): ts.FileWatcher {
         return { close: ts.noop };
-    }
-
-    close = ts.noop;
-
-    info(message: string): void {
-        this.host.log(message);
-    }
-
-    msg(message: string): void {
-        this.host.log(message);
-    }
-
-    loggingEnabled() {
-        return true;
-    }
-
-    getLogFileName(): string | undefined {
-        return undefined;
-    }
-
-    hasLevel() {
-        return false;
-    }
-
-    startGroup() { throw ts.notImplemented(); }
-    endGroup() { throw ts.notImplemented(); }
-
-    perftrc(message: string): void {
-        return this.host.log(message);
     }
 
     setTimeout(callback: (...args: any[]) => void, ms: number, ...args: any[]): any {
@@ -996,10 +974,21 @@ class FourslashSession extends ts.server.Session {
     }
 }
 
+// if (this.logger.hasLevel(ts.server.LogLevel.verbose)) {
+//     this.testhost.baselineHost("Before request");
+//     this.logger.info(`request:${ts.server.indent(JSON.stringify(request, undefined, 2))}`);
+// }
+// const response = super.executeCommand(request);
+// if (this.logger.hasLevel(ts.server.LogLevel.verbose)) {
+//     this.logger.info(`response:${ts.server.indent(JSON.stringify(response.response === ts.getSupportedCodeFixes() ? { ...response, response: "ts.getSupportedCodeFixes()" } : response, undefined, 2))}`);
+//     this.testhost.baselineHost("After request");
+// }
+// return response;
 export class ServerLanguageServiceAdapter implements LanguageServiceAdapter {
     private host: SessionClientHost;
     private client: ts.server.SessionClient;
     private server: FourslashSession;
+    logger: Logger;
     constructor(cancellationToken?: ts.HostCancellationToken, options?: ts.CompilerOptions) {
         // This is the main host that tests use to direct tests
         const clientHost = new SessionClientHost(cancellationToken, options);
@@ -1008,6 +997,7 @@ export class ServerLanguageServiceAdapter implements LanguageServiceAdapter {
         // This host is just a proxy for the clientHost, it uses the client
         // host to answer server queries about files on disk
         const serverHost = new SessionServerHost(clientHost);
+        this.logger = createLoggerWithInMemoryLogs(serverHost, /*sanitizeLibs*/ true);
         const opts: ts.server.SessionOptions = {
             host: serverHost,
             cancellationToken: ts.server.nullCancellationToken,
@@ -1016,7 +1006,7 @@ export class ServerLanguageServiceAdapter implements LanguageServiceAdapter {
             typingsInstaller: { ...ts.server.nullTypingsInstaller, globalTypingsCacheLocation: "/Library/Caches/typescript" },
             byteLength: Buffer.byteLength,
             hrtime: process.hrtime,
-            logger: serverHost,
+            logger: this.logger,
             canUseEvents: true,
             incrementalVerifier,
         };
@@ -1035,6 +1025,7 @@ export class ServerLanguageServiceAdapter implements LanguageServiceAdapter {
         this.client = client;
         this.host = clientHost;
     }
+    getLogger() { return this.logger; }
     getHost() { return this.host; }
     getLanguageService(): ts.LanguageService { return this.client; }
     getClassifier(): ts.Classifier { throw new Error("getClassifier is not available using the server interface."); }

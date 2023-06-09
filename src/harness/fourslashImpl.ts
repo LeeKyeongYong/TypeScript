@@ -7,6 +7,7 @@ import * as vfs from "./_namespaces/vfs";
 import * as vpath from "./_namespaces/vpath";
 
 import ArrayOrSingle = FourSlashInterface.ArrayOrSingle;
+import { Logger } from "./tsserverLogger";
 
 export const enum FourSlashTestType {
     Native,
@@ -225,6 +226,7 @@ export class TestState {
     public formatCodeSettings: ts.FormatCodeSettings;
 
     private inputFiles = new Map<string, string>();  // Map between inputFile's fileName and its content for easily looking up when resolving references
+    logger: Logger | undefined;
 
     private static getDisplayPartsJson(displayParts: ts.SymbolDisplayPart[] | undefined) {
         let result = "";
@@ -338,6 +340,7 @@ export class TestState {
         }
 
         const languageServiceAdapter = this.getLanguageServiceAdapter(testType, this.cancellationToken, compilationOptions);
+        this.logger = languageServiceAdapter.getLogger();
         this.languageServiceAdapterHost = languageServiceAdapter.getHost();
         this.languageService = memoWrap(languageServiceAdapter.getLanguageService(), this); // Wrap the LS to cache some expensive operations certain tests call repeatedly
         if (this.testType === FourSlashTestType.Server) {
@@ -426,6 +429,11 @@ export class TestState {
 
         this.formatCodeSettings = ts.testFormatSettings;
 
+        if (this.logger?.loggingEnabled()) {
+            const patch = this.languageServiceAdapterHost.vfs.diff();
+            this.logger.log(vfs.formatPatch(patch) || "");
+        }
+
         // Open the first file by default
         this.openFile(0);
 
@@ -459,6 +467,15 @@ export class TestState {
                 );
             }
             return proxy;
+        }
+    }
+
+    baselineTsserverLog() {
+        if (this.logger) {
+            Harness.Baseline.runBaseline(
+                `tsserver/fourslashServer/${ts.getBaseFileName(this.originalInputFileName).replace(".ts", ".js")}`,
+                this.logger.logs!.join("\n")
+            );
         }
     }
 
@@ -4423,6 +4440,7 @@ export function runFourSlashTestContent(basePath: string, testType: FourSlashTes
         throw new Error(`Syntax error in ${absoluteBasePath}: ${output.diagnostics![0].messageText}`);
     }
     runCode(output.outputText, state, actualFileName);
+    state.baselineTsserverLog();
 }
 
 function runCode(code: string, state: TestState, fileName: string): void {
